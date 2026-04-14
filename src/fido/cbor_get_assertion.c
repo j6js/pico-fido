@@ -42,7 +42,7 @@ uint32_t timerx = 0;
 uint8_t *datax = NULL;
 size_t lenx = 0;
 
-void reset_gna_state() {
+void reset_gna_state(void) {
     for (int i = 0; i < MAX_CREDENTIAL_COUNT_IN_LIST; i++) {
         credential_free(&credsx[i]);
     }
@@ -428,7 +428,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
         if (!silent) {
             for (int i = 0; i < numberOfCredentials; i++) {
                 for (int j = i + 1; j < numberOfCredentials; j++) {
-                    if (creds[j].creation > creds[i].creation) {
+                    if (creds[j].board_creation > creds[i].board_creation) {
                         Credential tmp = creds[j];
                         creds[j] = creds[i];
                         creds[i] = tmp;

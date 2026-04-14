@@ -28,8 +28,15 @@
 #include "bsp/board.h"
 #endif
 #ifdef ENABLE_EMULATION
-void add_keyboard_buffer(const uint8_t *buf, size_t len, bool press_enter) {}
-void append_keyboard_buffer(const uint8_t *buf, size_t len) {}
+void add_keyboard_buffer(const uint8_t *buf, size_t len, bool press_enter) {
+    (void)buf;
+    (void)len;
+    (void)press_enter;
+}
+void append_keyboard_buffer(const uint8_t *buf, size_t len) {
+    (void)buf;
+    (void)len;
+}
 #else
 #include "tusb.h"
 #endif
@@ -48,6 +55,11 @@ void append_keyboard_buffer(const uint8_t *buf, size_t len) {}
 #define CONFIG2_TOUCH       0x08
 #define CONFIG_LED_INV      0x10
 #define CONFIG_STATUS_MASK  0x1f
+
+#define CONFIG3_VALID       0x01
+#define CONFIG4_VALID       0x02
+#define CONFIG3_TOUCH       0x04
+#define CONFIG4_TOUCH       0x08
 
 /* EXT Flags */
 #define SERIAL_BTN_VISIBLE  0x01    // Serial number visible at startup (button press)
@@ -114,22 +126,21 @@ typedef struct otp_config {
 }) otp_config_t;
 
 #define otp_config_size sizeof(otp_config_t)
-uint16_t otp_status(bool is_otp);
-
-int otp_process_apdu();
-int otp_unload();
+static uint16_t otp_status(bool is_otp);
+static int otp_process_apdu(void);
+static int otp_unload(void);
 
 extern int (*hid_set_report_cb)(uint8_t, uint8_t, hid_report_type_t, uint8_t const *, uint16_t);
 extern uint16_t (*hid_get_report_cb)(uint8_t, uint8_t, hid_report_type_t, uint8_t *, uint16_t);
-int otp_hid_set_report_cb(uint8_t, uint8_t, hid_report_type_t, uint8_t const *, uint16_t);
-uint16_t otp_hid_get_report_cb(uint8_t, uint8_t, hid_report_type_t, uint8_t *, uint16_t);
+static int otp_hid_set_report_cb(uint8_t, uint8_t, hid_report_type_t, uint8_t const *, uint16_t);
+static uint16_t otp_hid_get_report_cb(uint8_t, uint8_t, hid_report_type_t, uint8_t *, uint16_t);
 
 const uint8_t otp_aid[] = {
     7,
     0xa0, 0x00, 0x00, 0x05, 0x27, 0x20, 0x01
 };
 
-int otp_select(app_t *a, uint8_t force) {
+static int otp_select(app_t *a, uint8_t force) {
     (void) force;
     if (cap_supported(CAP_OTP)) {
         a->process_apdu = otp_process_apdu;
@@ -149,7 +160,7 @@ int otp_select(app_t *a, uint8_t force) {
 
 uint8_t modhex_tab[] =
 { 'c', 'b', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'n', 'r', 't', 'u', 'v' };
-int encode_modhex(const uint8_t *in, size_t len, uint8_t *out) {
+static int encode_modhex(const uint8_t *in, size_t len, uint8_t *out) {
     for (size_t l = 0; l < len; l++) {
         *out++ = modhex_tab[in[l] >> 4];
         *out++ = modhex_tab[in[l] & 0xf];
@@ -157,11 +168,10 @@ int encode_modhex(const uint8_t *in, size_t len, uint8_t *out) {
     return 0;
 }
 static bool scanned = false;
-extern void scan_all();
-void init_otp() {
+void init_otp(void) {
     if (scanned == false) {
         scan_all();
-        for (uint8_t i = 0; i < 2; i++) {
+        for (uint8_t i = 0; i < 4; i++) {
             file_t *ef = search_dynamic_file(EF_OTP_SLOT1 + i);
             uint8_t *data = file_get_data(ef);
             otp_config_t *otp_config = (otp_config_t *) data;
@@ -180,13 +190,7 @@ void init_otp() {
         low_flash_available();
     }
 }
-extern int calculate_oath(uint8_t truncate,
-                          const uint8_t *key,
-                          size_t key_len,
-                          const uint8_t *chal,
-                          size_t chal_len);
-
-uint16_t calculate_crc(const uint8_t *data, size_t data_len) {
+static uint16_t calculate_crc(const uint8_t *data, size_t data_len) {
     uint16_t crc = 0xFFFF;
     for (size_t idx = 0; idx < data_len; idx++) {
         crc ^= data[idx];
@@ -202,12 +206,13 @@ uint16_t calculate_crc(const uint8_t *data, size_t data_len) {
 }
 
 static uint8_t session_counter[2] = { 0 };
-int otp_button_pressed(uint8_t slot) {
+static int otp_button_pressed(uint8_t slot) {
     init_otp();
     if (!cap_supported(CAP_OTP)) {
         return 3;
     }
-    file_t *ef = search_dynamic_file(slot == 1 ? EF_OTP_SLOT1 : EF_OTP_SLOT2);
+    uint16_t slot_ef = EF_OTP_SLOT1 + slot - 1;
+    file_t *ef = search_dynamic_file(slot_ef);
     const uint8_t *data = file_get_data(ef);
     otp_config_t *otp_config = (otp_config_t *) data;
     if (file_has_data(ef) == false) {
@@ -328,12 +333,45 @@ INITIALIZER( otp_ctor ) {
     hid_get_report_cb = otp_hid_get_report_cb;
 }
 
-int otp_unload() {
+static int otp_unload(void) {
     return PICOKEY_OK;
 }
 
 uint8_t status_byte = 0x0;
-uint16_t otp_status(bool is_otp) {
+static uint16_t otp_status_ext(void) {
+    for (int i = 0; i < 4; i++) {
+        file_t *ef = search_dynamic_file(EF_OTP_SLOT1 + i);
+        if (file_has_data(ef)) {
+            res_APDU[res_APDU_size++] = 0xB0 + i;
+            res_APDU[res_APDU_size++] = 0; // Filled later
+            uint8_t *p = res_APDU + res_APDU_size;
+            otp_config_t *otp_config = (otp_config_t *)file_get_data(ef);
+            *p++ = 0xA0;
+            *p++ = 2;
+            *p++ = otp_config->tkt_flags;
+            *p++ = otp_config->cfg_flags;
+            if (otp_config->cfg_flags & CHAL_YUBICO && otp_config->tkt_flags & CHAL_RESP) {
+
+            }
+            else if (otp_config->tkt_flags & OATH_HOTP) {
+            }
+            else if (otp_config->cfg_flags & SHORT_TICKET || otp_config->cfg_flags & STATIC_TICKET) {
+            }
+            else {
+                *p++ = 0xC0;
+                *p++ = 6;
+                memcpy(p, otp_config->fixed_data, 6);
+                p += 6;
+            }
+            uint8_t len = p - (res_APDU + res_APDU_size);
+            res_APDU[res_APDU_size - 1] = len;
+            res_APDU_size += len;
+        }
+    }
+    return SW_OK();
+}
+
+static uint16_t otp_status(bool is_otp) {
     if (scanned == false) {
         scan_all();
         scanned = true;
@@ -376,27 +414,28 @@ uint16_t otp_status(bool is_otp) {
     return SW_OK();
 }
 
-bool check_crc(const otp_config_t *data) {
+static bool check_crc(const otp_config_t *data) {
     uint16_t crc = calculate_crc((const uint8_t *) data, otp_config_size);
     return crc == 0xF0B8;
 }
 
 bool _is_otp = false;
-int cmd_otp() {
+static int cmd_otp(void) {
     uint8_t p1 = P1(apdu), p2 = P2(apdu);
-    if (p2 != 0x00) {
-        return SW_INCORRECT_P1P2();
-    }
     if (p1 == 0x01 || p1 == 0x03) { // Configure slot
         otp_config_t *odata = (otp_config_t *) apdu.data;
-        file_t *ef = file_new(p1 == 0x01 ? EF_OTP_SLOT1 : EF_OTP_SLOT2);
+        if (p1 == 0x03 && p2 != 0x0) {
+            return SW_INCORRECT_P1P2();
+        }
+        uint16_t slot = (p1 == 0x01 ? EF_OTP_SLOT1 : EF_OTP_SLOT2) + p2;
+        file_t *ef = file_new(slot);
         if (file_has_data(ef)) {
             otp_config_t *otpc = (otp_config_t *) file_get_data(ef);
             if (memcmp(otpc->acc_code, apdu.data + otp_config_size, ACC_CODE_SIZE) != 0) {
                 return SW_SECURITY_STATUS_NOT_SATISFIED();
             }
         }
-        for (int c = 0; c < otp_config_size; c++) {
+        for (size_t c = 0; c < otp_config_size; c++) {
             if (apdu.data[c] != 0) {
                 if (odata->rfu[0] != 0 || odata->rfu[1] != 0 || check_crc(odata) == false) {
                     return SW_WRONG_DATA();
@@ -415,10 +454,14 @@ int cmd_otp() {
     }
     else if (p1 == 0x04 || p1 == 0x05) { // Update slot
         otp_config_t *odata = (otp_config_t *) apdu.data;
+        if (p1 == 0x05 && p2 != 0x0) {
+            return SW_INCORRECT_P1P2();
+        }
+        uint16_t slot = (p1 == 0x04 ? EF_OTP_SLOT1 : EF_OTP_SLOT2) + p2;
         if (odata->rfu[0] != 0 || odata->rfu[1] != 0 || check_crc(odata) == false) {
             return SW_WRONG_DATA();
         }
-        file_t *ef = search_dynamic_file(p1 == 0x04 ? EF_OTP_SLOT1 : EF_OTP_SLOT2);
+        file_t *ef = search_dynamic_file(slot);
         if (file_has_data(ef)) {
             otp_config_t *otpc = (otp_config_t *) file_get_data(ef);
             if (memcmp(otpc->acc_code, apdu.data + otp_config_size, ACC_CODE_SIZE) != 0) {
@@ -446,8 +489,16 @@ int cmd_otp() {
     else if (p1 == 0x06) { // Swap slots
         uint8_t tmp[otp_config_size + 8];
         bool ef1_data = false;
-        file_t *ef1 = file_new(EF_OTP_SLOT1);
-        file_t *ef2 = file_new(EF_OTP_SLOT2);
+        uint16_t slot1 = EF_OTP_SLOT1, slot2 = EF_OTP_SLOT2;
+        if (apdu.ne > 0) {
+            if (apdu.ne != 2) {
+                return SW_WRONG_LENGTH();
+            }
+            slot1 += apdu.data[0];
+            slot2 += apdu.data[1];
+        }
+        file_t *ef1 = file_new(slot1);
+        file_t *ef2 = file_new(slot2);
         if (file_has_data(ef1)) {
             memcpy(tmp, file_get_data(ef1), file_get_size(ef1));
             ef1_data = true;
@@ -458,7 +509,7 @@ int cmd_otp() {
         else {
             delete_file(ef1);
             // When a dynamic file is deleted, existing referenes are invalidated
-            ef2 = file_new(EF_OTP_SLOT2);
+            ef2 = file_new(slot2);
         }
         if (ef1_data) {
             file_put_data(ef2, tmp, sizeof(tmp));
@@ -478,8 +529,15 @@ int cmd_otp() {
     else if (p1 == 0x13) { // Get config
         man_get_config();
     }
+    else if (p1 == 0x14) {
+        otp_status_ext();
+    }
     else if (p1 == 0x30 || p1 == 0x38 || p1 == 0x20 || p1 == 0x28) { // Calculate OTP
-        file_t *ef = search_dynamic_file(p1 == 0x30 || p1 == 0x20 ? EF_OTP_SLOT1 : EF_OTP_SLOT2);
+        if ((p1 == 0x38 || p1 == 0x28) && p2 != 0x0) {
+            return SW_INCORRECT_P1P2();
+        }
+        uint16_t slot = (p1 == 0x30 || p1 == 0x20 ? EF_OTP_SLOT1 : EF_OTP_SLOT2) + p2;
+        file_t *ef = search_dynamic_file(slot);
         if (file_has_data(ef)) {
             otp_config_t *otp_config = (otp_config_t *) file_get_data(ef);
             if (!(otp_config->tkt_flags & CHAL_RESP)) {
@@ -549,7 +607,7 @@ static const cmd_t cmds[] = {
     { 0x00, 0x0 }
 };
 
-int otp_process_apdu() {
+static int otp_process_apdu(void) {
     if (CLA(apdu) != 0x00) {
         return SW_CLA_NOT_SUPPORTED();
     }
@@ -569,9 +627,7 @@ uint8_t otp_frame_tx[70] = {0};
 uint8_t otp_exp_seq = 0, otp_curr_seq = 0;
 uint8_t otp_header[4] = {0};
 
-extern uint16_t *get_send_buffer_size(uint8_t itf);
-
-int otp_send_frame(uint8_t *frame, size_t frame_len) {
+static int otp_send_frame(uint8_t *frame, size_t frame_len) {
     uint16_t crc = calculate_crc(frame, frame_len);
     frame_len += put_uint16_t_le(~crc, frame + frame_len);
     *get_send_buffer_size(ITF_KEYBOARD) = frame_len;
@@ -583,7 +639,10 @@ int otp_send_frame(uint8_t *frame, size_t frame_len) {
     return 0;
 }
 
-int otp_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) {
+static int otp_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) {
+    (void)itf;
+    (void)report_id;
+    (void)bufsize;
     if (report_type == 3) {
         DEBUG_PAYLOAD(buffer, bufsize);
         if (buffer[7] == 0xFF) { // reset
@@ -631,11 +690,11 @@ int otp_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t repo
     return 0;
 }
 
-uint16_t otp_hid_get_report_cb(uint8_t itf,
-                               uint8_t report_id,
-                               hid_report_type_t report_type,
-                               uint8_t *buffer,
-                               uint16_t reqlen) {
+static uint16_t otp_hid_get_report_cb(uint8_t itf,
+                                      uint8_t report_id,
+                                      hid_report_type_t report_type,
+                                      uint8_t *buffer,
+                                      uint16_t reqlen) {
     // TODO not Implemented
     (void) itf;
     (void) report_id;
